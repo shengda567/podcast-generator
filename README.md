@@ -76,3 +76,4 @@ The application will guide you through each step, and you can view the generated
 
 For any issues or questions, please reach out at contact@zonesix.io
 
+# podcast-generator
