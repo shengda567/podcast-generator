@@ -1,11 +1,25 @@
 # Bring in deps
 from dotenv import load_dotenv
 import os
+os.environ["SUNO_OFFLOAD_CPU"] = "True"
+os.environ["SUNO_USE_SMALL_MODELS"] = "True"
+
+# Apple Silicon optimizations
+import torch
+torch.backends.mps.enabled = True
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+
 import streamlit as st
-from langchain.llms import OpenAI
+
+from langchain_community.llms import OpenAI
+from langchain_community.chat_models import ChatOpenAI
+from langchain_community.utilities import GoogleSearchAPIWrapper
+
+from langchain.chains import LLMChain
+# from langchain.llms import OpenAI
+# from langchain.chat_models import ChatOpenAI
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain, OpenAI
-from langchain.utilities import GoogleSearchAPIWrapper
+# from langchain.utilities import GoogleSearchAPIWrapper
 from langchain.memory import ConversationBufferMemory
 import urllib.parse
 from bark import generate_audio, SAMPLE_RATE, preload_models
@@ -48,9 +62,9 @@ load_dotenv()
 
 # Access the environment variables 
 API_KEYS = {
-    'OPENAI_API_KEY': st.text_input("Enter your OpenAI API key"),
-    'GOOGLE_CSE_ID': st.text_input("Enter your Custom Search Engine ID (CSE) key"),
-    'GOOGLE_API_KEY': st.text_input("Enter your Google API key"),
+    'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
+    'GOOGLE_CSE_ID': os.getenv('CUSTOM_SEARCH_ENGINE_ID'),
+    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
 }
 
 # Initialize environment
@@ -60,7 +74,8 @@ os.environ.update(API_KEYS)
 google_search_tool = GoogleSearchAPIWrapper()
 
 # Initialize OpenAI API
-openai_llm = OpenAI(model_name="gpt-3.5-turbo-16k") # Initialize the OpenAI LLM
+#openai_llm = OpenAI(model_name="gpt-3.5-turbo-16k") # Initialize the OpenAI LLM
+openai_llm = ChatOpenAI(model="gpt-3.5-turbo-16k", temperature=0.7)
 
 # Define templates
 title = PromptTemplate.from_template("Write a witty, funny, or ironic podcast title about {topic}.")
@@ -163,17 +178,63 @@ def create_podcast_directory():
     PODCAST_DIR = podcast_dir
     return PODCAST_DIR  # Add this line
 
+# def convert_comments_to_audio(comments):
+#     """Generate audio for each comment in the script."""
+#     audio_files = []
+#     silence = np.zeros(int(0.5*SAMPLE_RATE))
+#     for comment in comments:
+#         voice_id = VOICE_MAP[comment['role']]
+#         audio_array = generate_audio(comment['text'], history_prompt=voice_id)  # Use Bark's generate_audio
+#         audio_file = f"{st.session_state.podcast_dir}/{comment['role']}_{comment['order']}.mp3"  # Save in podcast directory
+#         audio_array.export(audio_file, format="mp3")  # Export as mp3
+#         audio_files.append(audio_file)
+#     return audio_files
+
+def optimize_memory():
+    import gc
+    gc.collect()
+    torch.mps.empty_cache()
+    
 def convert_comments_to_audio(comments):
+    optimize_memory()
     """Generate audio for each comment in the script."""
+    st.write("System Info:")
+    st.write(f"MPS available: {torch.backends.mps.is_available()}")
+    st.write(f"Device being used: {device}")
+    st.write(f"Number of comments to process: {len(comments)}")
+    
     audio_files = []
-    silence = np.zeros(int(0.5*SAMPLE_RATE))
-    for comment in comments:
-        voice_id = VOICE_MAP[comment['role']]
-        audio_array = generate_audio(comment['text'], history_prompt=voice_id)  # Use Bark's generate_audio
-        audio_file = f"{st.session_state.podcast_dir}/{comment['role']}_{comment['order']}.mp3"  # Save in podcast directory
-        audio_array.export(audio_file, format="mp3")  # Export as mp3
-        audio_files.append(audio_file)
+    for i, comment in enumerate(comments):
+        optimize_memory()
+        st.write(f"Processing comment {i+1}/{len(comments)}")
+        try:
+            voice_id = VOICE_MAP[comment['role']]
+            st.write(f"Generating audio for {comment['role']}")
+            # Break text into smaller chunks if it's too long
+            text = comment['text']
+            if len(text) > 200:  # Adjust this value based on performance
+                chunks = [text[i:i+200] for i in range(0, len(text), 200)]
+            else:
+                chunks = [text]
+                
+            combined_audio = None
+            for chunk in chunks:
+                audio_array = generate_audio(chunk, history_prompt=voice_id)
+                if combined_audio is None:
+                    combined_audio = audio_array
+                else:
+                    combined_audio = np.concatenate([combined_audio, audio_array])
+            
+            audio_file = f"{st.session_state.podcast_dir}/{comment['role']}_{comment['order']}.mp3"
+            combined_audio.export(audio_file, format="mp3")
+            audio_files.append(audio_file)
+            st.write(f"Successfully generated: {audio_file}")
+        except Exception as e:
+            st.write(f"Error in audio generation: {str(e)}")
+            print(f"Detailed error: {e}")  # More detailed error in terminal
+    
     return audio_files
+
 
 def parse_script(script):
     comments = []
